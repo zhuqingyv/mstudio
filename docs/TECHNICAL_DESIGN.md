@@ -17,7 +17,7 @@ mstudio 是一个**高度特化的数据蒸馏与 LoRA 训练工具**。它只�
 - **纯本地**：M2 Ultra 64GB 上完成全部流程，不上云。
 - **零 schema 依赖**：不感知上游数据结构。无论原始数据是 `.txt`、`.md`、`.jsonl`、`.db` 还是混合格式，均由内部 Agent 自行理解。
 - **专用 Agent**：Agent 不是通用助手，而是「数据蒸馏工蚁」——没有代码执行、没有 Git、没有浏览器、没有 MCP 工具。全部提示词和内部循环只围绕一个使命：高效分类和整理训练数据。
-- **因果极简**：用户数据好 → LoRA 效果好；用户数据差 → LoRA 效果差。中间不加任何需要用户决策的环节。
+- **极简因果**：用户数据好 → LoRA 效果好；用户数据差 → LoRA 效果差。中间不加任何需要用户决策的环节。
 
 ### 1.2 用户视角
 
@@ -115,13 +115,12 @@ Agent 是 mstudio 的心脏。它不是一个通用 Agent，而是一个**高度
 - `summary`：内容摘要
 - `content_types`：**多标签分类**，如 `["knowledge", "anti_pattern"]`
 - `quality_score`：信息密度与可训练价值（0-1）
-- `key_entities`：关键实体
 - `confidence`：模型对自身判断的确信度
 
 **关键设计**：
 - `content_types` 不是枚举硬编码，而是模型自由输出的标签字符串
-- Agent 后续按标签聚类，新增类型无需改代码，只需新增 prompt 模板
-- 低 confidence 的文档进入「待人工确认」队列（但用户不感知，内部降级处理）
+- Agent 按标签归类样本，新增类型无需改代码，只需新增 prompt 模板
+- 单文件独立处理：每个文件单独进入模型推理，文件之间无交叉分析
 
 #### 3.1.3 阶段 ③：蒸馏与重构（Distillation & Reconstruction）
 
@@ -153,16 +152,15 @@ Agent 是 mstudio 的心脏。它不是一个通用 Agent，而是一个**高度
 
 #### 3.1.4 阶段 ④：质量控制（Quality Control）
 
-**职责**：清洗、去重、平衡、过滤。
+**职责**：过滤低质量样本，保留有效训练数据。
 
-- **语义去重**：用本地 embedding 模型计算样本相似度，合并或删除冗余
 - **质量过滤**：过滤过短、过泛、信息密度低于阈值的样本
-- **矛盾检测**：找出 instruction 相似但 response 矛盾的样本，标记内部告警
-- **分布平衡**：确保各 content_type 的样本量不过度倾斜（不追求绝对平均，但防止某一类垄断）
+- **矛盾检测**：同一文件内部若存在自相矛盾，标记内部告警
+- **分布统计**：统计各 content_type 的样本量，生成内部诊断报告
 
-**反馈回路**：
-- 如果某类样本质量整体过低，Agent 可触发「回退」：回到阶段 ③ 用更保守的模板重新生成
-- 如果整体数据量过少，Agent 可触发「增强」：用本地 LLM 对高价值样本做 paraphrase 扩充
+**关键原则**：
+- **不去重**：同一个 case 在多个文件中出现，说明该信息被反复验证，保留所有出现
+- 单文件处理，文件之间不做交叉比对
 
 #### 3.1.5 阶段 ⑤：训练准备（Training Preparation）
 
@@ -318,8 +316,7 @@ mstudio/
 │   │   └── config_builder.py     # 超参自动推荐
 │   ├── models/                   # 本地模型调用抽象
 │   │   ├── __init__.py
-│   │   ├── llm_client.py         # 统一 LLM 调用接口
-│   │   └── embedding_client.py   # 统一 Embedding 调用接口
+│   │   └── llm_client.py         # 统一 LLM 调用接口（调用本地 Ollama 或 MLX）
 │   └── output/                   # 输出层
 │       ├── builder.py            # Modelfile 生成
 │       └── packer.py             # 打包输出
@@ -340,14 +337,11 @@ mstudio/
 # 安装 MLX
 pip install mlx-lm
 
-# 安装 Ollama（用于推理和 embedding）
+# 安装 Ollama（用于本地 LLM 推理）
 brew install ollama
 
 # 拉取默认基座模型
 ollama pull qwen2.5:14b
-
-# 拉取 embedding 模型
-ollama pull qwen3-embedding:0.6b
 ```
 
 ### 7.2 验证里程碑
@@ -368,5 +362,4 @@ ollama pull qwen3-embedding:0.6b
 1. **多标签分类的准确性**：本地 7B/14B 模型对中文/英文混合数据的分类能力是否足够？
 2. **混合 vs 独立 LoRA**：同样的多标签数据，训成一个 LoRA 还是按标签拆分成多个再 merge，哪个效果更好？
 3. **数据量下限**：Agent 蒸馏出的数据最少需要多少条，才能训出「可感知差异」的 LoRA？
-4. **回退与增强策略**：阶段 ④ 的反馈回路（回退重蒸馏、paraphrase 扩充）是否真的能提升最终效果？
-5. **Embedding 去重阈值**：语义相似度多高的样本应该被合并？不同内容类型的阈值是否不同？
+4. **数据量下限**：Agent 蒸馏出的数据最少需要多少条，才能训出「可感知差异」的 LoRA？
